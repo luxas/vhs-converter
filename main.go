@@ -41,6 +41,7 @@ type Config struct {
 	InputDir  string // 038
 	OutputDir string // 038/merged
 	Force     bool
+	FixAudio  bool
 
 	FromVideo    uint64
 	FromDuration time.Duration
@@ -56,6 +57,7 @@ func (c *Config) RegisterFlags(fs *pflag.FlagSet) {
 	fs.StringVarP(&c.InputDir, "in-dir", "i", c.InputDir, "foo")
 	fs.StringVarP(&c.OutputDir, "out-dir", "o", c.OutputDir, "foo")
 	fs.BoolVarP(&c.Force, "force", "f", c.Force, "whether to overwrite possible files")
+	fs.BoolVar(&c.FixAudio, "fix-audio", c.FixAudio, "whether to fix audio to use aac or not")
 }
 
 func (c *Config) Complete() (err error) {
@@ -125,7 +127,9 @@ func run() error {
 		fmt.Printf("Running vhs-converter %s (commit: %s, build date: %s)\n", version, commit, date)
 	}
 
-	c := Config{}
+	c := Config{
+		FixAudio: true,
+	}
 	c.RegisterFlags(pflag.CommandLine)
 	pflag.Parse()
 	if err := c.Complete(); err != nil {
@@ -168,10 +172,16 @@ func start(c *Config, ffmpegExecutable string) error {
 			return err
 		}
 
-		args := []string{"-f", "concat", "-i", cfgFile, "-c", "copy", outFile}
+		args := []string{"-f", "concat", "-i", cfgFile, "-c:v", "copy"}
 		if c.Force {
 			args = append(args, "-y")
 		}
+		if c.FixAudio {
+			args = append(args, "-c:a", "aac")
+		} else {
+			args = append(args, "-c:a", "copy")
+		}
+		args = append(args, outFile)
 		if err := executeCommand(ffmpegExecutable, args...); err != nil {
 			return err
 		}

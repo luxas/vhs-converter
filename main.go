@@ -25,6 +25,13 @@ const (
 	ffmpegExtractDir = "ffmpeg/"
 	ffmpegBuildName  = "ffmpeg-4.3-win64-static"
 	ffmpegURL        = "https://ffmpeg.zeranoe.com/builds/win64/static/" + ffmpegBuildName + ".zip"
+	unknownMark      = "<unknown>"
+)
+
+var (
+	version = unknownMark
+	commit  = unknownMark
+	date    = unknownMark
 )
 
 type Config struct {
@@ -72,14 +79,6 @@ func (c *Config) Complete() (err error) {
 	if c.OutputDir == "" {
 		c.OutputDir = filepath.Join(c.InputDir, "merged")
 	}
-	/*
-		if c.InputDir != "" && !fileExists(c.InputDir) {
-			return fmt.Errorf("input directory %q doesn't exist", c.InputDir)
-		}
-		if !fileExists(c.OutputDir) {
-			return fmt.Errorf("output directory %q doesn't exist", c.OutputDir)
-		}
-	*/
 
 	return
 }
@@ -122,6 +121,10 @@ func main() {
 }
 
 func run() error {
+	if version != unknownMark {
+		fmt.Printf("Running vhs-converter %s (commit: %s, build date: %s)\n", version, commit, date)
+	}
+
 	c := Config{}
 	c.RegisterFlags(pflag.CommandLine)
 	pflag.Parse()

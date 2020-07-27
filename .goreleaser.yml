@@ -1,0 +1,18 @@
+# .goreleaser.yml
+project_name: vhs-converter
+
+before:
+  hooks:
+  - go mod download
+
+builds:
+- main: ./main.go
+  id: vhs-converter
+  binary: vhs-converter
+  goarch:
+  - amd64
+  goos:
+  - linux
+  - windows
+  env:
+  - CGO_ENABLED=0

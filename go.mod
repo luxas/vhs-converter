@@ -1,4 +1,4 @@
-module github.com/luxas/vhs-ffmpeg
+module github.com/luxas/vhs-converter
 
 go 1.14
 

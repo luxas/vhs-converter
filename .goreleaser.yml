@@ -16,3 +16,8 @@ builds:
   - windows
   env:
   - CGO_ENABLED=0
+
+archives:
+- builds:
+  - vhs-converter
+  format: binary

@@ -1,12 +1,12 @@
 # .goreleaser.yml
-project_name: vhs-converter
+project_name: digitized
 
 before:
   hooks:
   - go mod download
 
 builds:
-- main: ./main.go
+- main: .cmd/vhs-converter/main.go
   id: vhs-converter
   binary: vhs-converter
   goarch:

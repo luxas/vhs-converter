@@ -9,5 +9,8 @@ fmt:
 vet:
 	go vet ./...
 
-test: tidy fmt vet
+build:
+	go build -o bin/vhs-converter cmd/vhs-converter
+
+test: build tidy fmt vet
 	go test ./... -coverprofile cover.out

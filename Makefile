@@ -25,7 +25,7 @@ build:
 	go build -o bin/digitized ./cmd/digitized
 
 test: build tidy fmt vet
-	go test ./cmd/... ./pkg/... -coverprofile cover.out
+	go test ./cmd/... ./pkg/... -tags skipintegration -coverprofile cover.out
 
 docker-%:
 	mkdir -p "${CACHE_DIR}/go" "${CACHE_DIR}/cache"

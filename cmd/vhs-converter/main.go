@@ -35,7 +35,7 @@ var (
 )
 
 type Config struct {
-	PerVideo  uint64
+	PerVideo  uint64 // defaulted, e.g. 14 in the following example
 	From      string // e.g. 0,3m18s
 	To        string // e.g. 13,4m22s
 	InputDir  string // 038

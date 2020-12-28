@@ -2,6 +2,8 @@ module github.com/luxas/digitized
 
 go 1.15
 
+replace github.com/weaveworks/libgitops => github.com/luxas/libgitops v0.0.4-0.20201228202736-69e47d6580cd
+
 require (
 	github.com/artdarek/go-unzip v1.0.0
 	github.com/fluxcd/go-git-providers v0.0.2

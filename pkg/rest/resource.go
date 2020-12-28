@@ -104,6 +104,17 @@ func (rh *resourceHandlerImpl) validateBody(rc ResourceContext, obj runtime.Obje
 	return meta.ValidateIfPossible(obj)
 }
 
+func (rh *resourceHandlerImpl) returnFromStorage(rc ResourceContext, key storage.ObjectKey) error {
+	obj, err := rc.Storage().Get(key)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return rc.Errorf(http.StatusNotFound, storage.ErrNotFound)
+		}
+		return err
+	}
+	return rc.JSONIndent(http.StatusOK, obj)
+}
+
 func (rh *resourceHandlerImpl) namedRoute() string {
 	if rh.gvkr.Namespaced {
 		return "/:namespace/:name/"
@@ -124,16 +135,6 @@ func (rh *resourceHandlerImpl) list(c echo.Context) error {
 	}
 
 	return rc.JSONIndent(http.StatusOK, &v1alpha1.List{Items: runtimeList})
-}
-
-func (rh *resourceHandlerImpl) getSingleton(c echo.Context) error {
-	rc := c.(ResourceContext)
-
-	obj, err := rc.Storage().Get(meta.SingletonKey(rc.KindKey()))
-	if err != nil {
-		return err
-	}
-	return rc.JSONIndent(http.StatusOK, obj)
 }
 
 func (rh *resourceHandlerImpl) decodeObject(rc ResourceContext) (runtime.Object, error) {
@@ -171,6 +172,10 @@ func (rh *resourceHandlerImpl) create(c echo.Context) error {
 
 	// Write to storage
 	if err := rc.Storage().Create(obj); err != nil {
+		// Return BadRequest if the resource already exists
+		if errors.Is(err, storage.ErrAlreadyExists) {
+			return rc.Errorf(http.StatusBadRequest, storage.ErrAlreadyExists)
+		}
 		return rc.Errorf(http.StatusInternalServerError, err)
 	}
 
@@ -213,12 +218,8 @@ func (rh *resourceHandlerImpl) patch(c echo.Context) error {
 	if err := rc.Storage().Patch(key, patch); err != nil {
 		return err
 	}
-	// After doing the patch, return the new object
-	obj, err := rc.Storage().Get(key)
-	if err != nil {
-		return err
-	}
-	return rc.JSONIndent(http.StatusOK, obj)
+	// After doing the patch, return the new object from storage
+	return rh.returnFromStorage(rc, key)
 }
 
 func (rh *resourceHandlerImpl) update(c echo.Context) error {
@@ -237,6 +238,7 @@ func (rh *resourceHandlerImpl) update(c echo.Context) error {
 	}
 
 	// Write to storage
+	// TODO: storage.GVKForObject should check for obj==nil
 	if err := rc.Storage().Update(obj); err != nil {
 		return rc.Errorf(http.StatusInternalServerError, err)
 	}
@@ -246,12 +248,12 @@ func (rh *resourceHandlerImpl) update(c echo.Context) error {
 
 func (rh *resourceHandlerImpl) get(c echo.Context) error {
 	rc := c.(NamedResourceContext)
+	return rh.returnFromStorage(rc, rc.ObjectKey())
+}
 
-	obj, err := rc.Storage().Get(rc.ObjectKey())
-	if err != nil {
-		return err
-	}
-	return rc.JSONIndent(http.StatusOK, obj)
+func (rh *resourceHandlerImpl) getSingleton(c echo.Context) error {
+	rc := c.(ResourceContext)
+	return rh.returnFromStorage(rc, meta.SingletonKey(rc.KindKey()))
 }
 
 func (rh *resourceHandlerImpl) delete(c echo.Context) error {

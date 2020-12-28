@@ -3,7 +3,6 @@ package rest
 import (
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/labstack/echo"
 	"github.com/luxas/digitized/pkg/apis/digitized.luxaslabs.com/v1alpha1"
@@ -46,10 +45,11 @@ type storageContextImpl struct {
 }
 
 func (cc *storageContextImpl) Stringf(code int, format string, args ...interface{}) error {
-	if !strings.HasSuffix(format, "\n") {
-		format += "\n"
-	}
-	return cc.Context.String(code, fmt.Sprintf(format, args...))
+	return cc.Context.JSONPretty(code, &jsonMsgResp{fmt.Sprintf(format, args...)}, "  ")
+}
+
+type jsonMsgResp struct {
+	Message string `json:"message"`
 }
 
 func (cc *storageContextImpl) Warn(err error) {

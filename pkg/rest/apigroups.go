@@ -87,8 +87,6 @@ func newGroupVersionHandler(parent *echo.Group, gv schema.GroupVersion, scheme *
 	gvh := &groupVersionHandlerImpl{gv, groupHandler, make(map[schema.GroupVersionKind]ResourceHandler), scheme}
 	groupHandler.GET("/", gvh.info)
 
-	// TODO: RawStorage should automatically mkdir
-
 	for kind := range scheme.KnownTypes(gv) {
 		gvk := gv.WithKind(kind)
 

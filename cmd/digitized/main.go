@@ -63,7 +63,7 @@ func start(cfgFile string) error {
 
 	// Create a new simple storage
 	s := storage.NewGenericStorage(
-		storage.NewGenericRawStorage(cfg.RawStoragePath, v1alpha1.SchemeGroupVersion, serializer.ContentTypeJSON),
+		storage.NewGenericRawStorage(cfg.RawStoragePath, v1alpha1.SchemeGroupVersion, serializer.ContentTypeYAML),
 		ser,
 		[]runtime.IdentifierFactory{meta.Metav1NameIdentifierFactory{}},
 	)

@@ -4,7 +4,12 @@ go 1.15
 
 require (
 	github.com/artdarek/go-unzip v1.0.0
+	github.com/fluxcd/go-git-providers v0.0.2
+	github.com/jinzhu/inflection v1.0.0
+	github.com/labstack/echo v3.3.10+incompatible
 	github.com/otiai10/copy v1.4.1
+	github.com/sirupsen/logrus v1.7.0 // indirect
 	github.com/spf13/pflag v1.0.5
-	k8s.io/apimachinery v0.20.1
+	github.com/weaveworks/libgitops v0.0.3
+	k8s.io/apimachinery v0.18.6
 )

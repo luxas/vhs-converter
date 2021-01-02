@@ -10,11 +10,14 @@ import (
 	"github.com/labstack/echo"
 	"github.com/luxas/digitized/pkg/apis/digitized.luxaslabs.com/v1alpha1"
 	"github.com/luxas/digitized/pkg/apis/meta"
+	"github.com/weaveworks/libgitops/pkg/filter"
 	"github.com/weaveworks/libgitops/pkg/runtime"
 	"github.com/weaveworks/libgitops/pkg/serializer"
 	"github.com/weaveworks/libgitops/pkg/storage"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 )
+
+const nameParamPath = "/:name/"
 
 type (
 	// ResourceHookHandler is a hook handler that operates in a resource context.
@@ -28,19 +31,29 @@ type (
 )
 
 func newResourceHandler(parent *echo.Group, gvkr GroupVersionKindResource) ResourceHandler {
-	g := parent.Group("/"+gvkr.Resource, resourceContextMiddleware(gvkr))
-	rh := &resourceHandlerImpl{g, gvkr, nil, nil, nil}
+	rh := &resourceHandlerImpl{nil, gvkr, nil, nil, nil}
+
+	resourcePath := "/" + gvkr.Resource
+	if gvkr.Namespaced {
+		// List resources in all namespaces
+		parent.GET(resourcePath+"/", rh.list, resourceContextMiddleware(gvkr))
+		// Add the namespaced resource route
+		rh.g = parent.Group("/namespaces/:namespace"+resourcePath, resourceContextMiddleware(gvkr), namespacedResourceContextMiddleware())
+	} else {
+		rh.g = parent.Group(resourcePath, resourceContextMiddleware(gvkr))
+	}
+
 	// Register the relevant routes
-	g.POST("/", rh.create)
-	g.PATCH("/", rh.patch)
-	g.PUT("/", rh.update)
+	rh.g.POST("/", rh.create)
+	rh.g.PATCH("/", rh.patch)
+	rh.g.PUT("/", rh.update)
 	// Singletons don't have named routes, nor LIST
 	if gvkr.Singleton {
-		g.GET("/", rh.getSingleton)
+		rh.g.GET("/", rh.getSingleton)
 	} else {
-		g.GET("/", rh.list)
-		g.GET(rh.namedRoute(), rh.get, namedResourceContextMiddleware())
-		g.DELETE(rh.namedRoute(), rh.delete, namedResourceContextMiddleware())
+		rh.g.GET("/", rh.list)
+		rh.g.GET(nameParamPath, rh.get, namedResourceContextMiddleware())
+		rh.g.DELETE(nameParamPath, rh.delete, namedResourceContextMiddleware())
 	}
 	return rh
 }
@@ -64,7 +77,7 @@ func (rh *resourceHandlerImpl) RegisterSubResource(name string, fn ResourceHookH
 }
 
 func (rh *resourceHandlerImpl) RegisterNamedSubResource(name string, fn NamedResourceHookHandler) {
-	rh.g.PUT("/"+rh.namedRoute()+"/"+name+"/", func(c echo.Context) error {
+	rh.g.PUT(nameParamPath+name+"/", func(c echo.Context) error {
 		return fn(c.(NamedResourceContext))
 	}, namedResourceContextMiddleware())
 }
@@ -100,6 +113,10 @@ func (rh *resourceHandlerImpl) validateBody(rc ResourceContext, obj runtime.Obje
 			}
 		}
 	}
+	// Enforce that the namespaces match
+	if ns, ok := rc.(NamespacedResourceContext); ok && ns.Namespace() != obj.GetNamespace() {
+		return fmt.Errorf("Object namespace in body: %q doesn't match namespace in path: %q", obj.GetNamespace(), ns.Namespace())
+	}
 	// Validate the object if possible
 	return meta.ValidateIfPossible(obj)
 }
@@ -108,25 +125,23 @@ func (rh *resourceHandlerImpl) returnFromStorage(rc ResourceContext, key storage
 	obj, err := rc.Storage().Get(key)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return rc.Errorf(http.StatusNotFound, storage.ErrNotFound)
+			return newStatusError(http.StatusNotFound, storage.ErrNotFound)
 		}
 		return err
 	}
 	return rc.JSONIndent(http.StatusOK, obj)
 }
 
-func (rh *resourceHandlerImpl) namedRoute() string {
-	if rh.gvkr.Namespaced {
-		return "/:namespace/:name/"
-	}
-	return "/:name/"
-}
-
 func (rh *resourceHandlerImpl) list(c echo.Context) error {
 	rc := c.(ResourceContext)
-	list, err := rc.Storage().List(rc.KindKey())
+	// Conditionally filter on namespace
+	var filters []filter.ListOption
+	if ns, ok := rc.(NamespacedResourceContext); ok {
+		filters = append(filters, namespaceFilter{Namespace: ns.Namespace()})
+	}
+	list, err := rc.Storage().List(rc.KindKey(), filters...)
 	if err != nil {
-		return rc.Errorf(http.StatusInternalServerError, err)
+		return err
 	}
 	// Need to do dummy conversion
 	runtimeList := make([]kruntime.Object, 0, len(list))
@@ -141,16 +156,16 @@ func (rh *resourceHandlerImpl) decodeObject(rc ResourceContext) (runtime.Object,
 	// Decode the body and cast it to libgitops runtime.Object
 	kobj, err := rc.Storage().Serializer().Decoder().Decode(serializer.NewJSONFrameReader(rc.Request().Body))
 	if err != nil {
-		return nil, rc.Errorf(http.StatusBadRequest, err)
+		return nil, newStatusError(http.StatusBadRequest, err)
 	}
 	obj, ok := kobj.(runtime.Object)
 	if !ok {
-		return nil, rc.Errorf(http.StatusInternalServerError, errors.New("couldn't cast decoded object to runtime.Object"))
+		return nil, newStatusErrorf(http.StatusInternalServerError, "couldn't cast decoded object to runtime.Object")
 	}
 
 	// Validate the body
 	if err := rh.validateBody(rc, obj); err != nil {
-		return nil, rc.Errorf(http.StatusBadRequest, err)
+		return nil, newStatusError(http.StatusBadRequest, err)
 	}
 	return obj, nil
 }
@@ -174,9 +189,9 @@ func (rh *resourceHandlerImpl) create(c echo.Context) error {
 	if err := rc.Storage().Create(obj); err != nil {
 		// Return BadRequest if the resource already exists
 		if errors.Is(err, storage.ErrAlreadyExists) {
-			return rc.Errorf(http.StatusBadRequest, storage.ErrAlreadyExists)
+			return newStatusError(http.StatusBadRequest, storage.ErrAlreadyExists)
 		}
-		return rc.Errorf(http.StatusInternalServerError, err)
+		return newStatusError(http.StatusInternalServerError, err)
 	}
 
 	return rc.JSONIndent(http.StatusCreated, obj)
@@ -200,7 +215,7 @@ func (rh *resourceHandlerImpl) patch(c echo.Context) error {
 		nil,   // no default GVK although we "could", the caller should be specific
 	)
 	if err != nil {
-		return rc.Errorf(http.StatusBadRequest, fmt.Errorf("couldn't decode patch: %w", err))
+		return newStatusErrorf(http.StatusBadRequest, "couldn't decode patch: %v", err)
 	}
 	// Wrap the decoded object in an extension that knows how to propagate namespaced and singleton
 	// information. Now, extract the correct ObjectKey for this patch
@@ -212,6 +227,7 @@ func (rh *resourceHandlerImpl) patch(c echo.Context) error {
 
 	// TODO: Verify that GVKR & decoded object GVK match
 	// TODO: Fix Storage.Patch to work with RawStorage & YAML
+	// TODO: Use the same logic as PUT underneath, to make use of validateBody
 
 	// Write the patch to the underlying storage
 	// TODO: Make sure we validate the new payload here before applying
@@ -240,7 +256,7 @@ func (rh *resourceHandlerImpl) update(c echo.Context) error {
 	// Write to storage
 	// TODO: storage.GVKForObject should check for obj==nil
 	if err := rc.Storage().Update(obj); err != nil {
-		return rc.Errorf(http.StatusInternalServerError, err)
+		return err
 	}
 
 	return rc.JSONIndent(http.StatusOK, obj)
@@ -253,6 +269,7 @@ func (rh *resourceHandlerImpl) get(c echo.Context) error {
 
 func (rh *resourceHandlerImpl) getSingleton(c echo.Context) error {
 	rc := c.(ResourceContext)
+	// TODO: Maybe support namespaced singletons in the future
 	return rh.returnFromStorage(rc, meta.SingletonKey(rc.KindKey()))
 }
 
@@ -267,7 +284,7 @@ func (rh *resourceHandlerImpl) delete(c echo.Context) error {
 	}
 
 	if err := rc.Storage().Delete(rc.ObjectKey()); err != nil {
-		return rc.Errorf(http.StatusInternalServerError, err)
+		return err
 	}
 	return rc.NoContent(http.StatusNoContent)
 }
@@ -282,3 +299,30 @@ type customPartialObject struct {
 
 func (po *customPartialObject) IsNamespaced() bool { return po.namespaced }
 func (po *customPartialObject) IsSingleton() bool  { return po.singleton }
+
+// TODO: Upstream this
+// namespaceFilter is an ObjectFilter that compares runtime.Object.GetNamespace()
+// to the Namespace field.
+type namespaceFilter struct {
+	// Namespace matches the object by .metadata.namespace. If left as
+	// an empty string, it is ignored when filtering.
+	// +required
+	Namespace string
+}
+
+// Filter implements ObjectFilter
+func (f namespaceFilter) Filter(obj runtime.Object) (bool, error) {
+	// Require f.Namespace to always be set.
+	if len(f.Namespace) == 0 {
+		return false, fmt.Errorf("the namespaceFilter.Namespace field must not be empty: %w", filter.ErrInvalidFilterParams)
+	}
+	// Otherwise, just use an equality check
+	return f.Namespace == obj.GetNamespace(), nil
+}
+
+// ApplyToListOptions implements ListOption, and adds itself converted to
+// a ListFilter to ListOptions.Filters.
+func (f namespaceFilter) ApplyToListOptions(target *filter.ListOptions) error {
+	target.Filters = append(target.Filters, filter.ObjectToListFilter(f))
+	return nil
+}

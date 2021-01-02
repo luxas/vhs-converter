@@ -74,7 +74,8 @@ func (agh *apiGroupsHandlerImpl) info(c echo.Context) error {
 	for gv := range agh.apiGroups {
 		apiGroupNames = append(apiGroupNames, gv.String())
 	}
-	return c.JSON(http.StatusOK, apiGroupNames)
+	// TODO: Return metav1.APIGroupList
+	return c.JSONPretty(http.StatusOK, apiGroupNames, "  ")
 }
 
 func (agh *apiGroupsHandlerImpl) GroupVersion(gv schema.GroupVersion) (gh GroupVersionHandler, ok bool) {
@@ -100,12 +101,17 @@ func newGroupVersionHandler(parent *echo.Group, gv schema.GroupVersion, scheme *
 			panic(err)
 		}
 		isSingleton := meta.IsSingleton(obj)
+		isNamespaced := meta.IsNamespaced(obj)
+		if isSingleton && isNamespaced {
+			// TODO: relax this constraint in the future
+			panic("a resource must not be namespaced if it is a singleton")
+		}
 		// Pluralize if it is not a singleton
 		if !isSingleton {
 			kind = inflection.Plural(kind)
 		}
 		resourceName := strings.ToLower(kind)
-		gvkr := GroupVersionKindResource{gvk.Group, gvk.Version, gvk.Kind, resourceName, meta.IsNamespaced(obj), isSingleton}
+		gvkr := GroupVersionKindResource{gvk.Group, gvk.Version, gvk.Kind, resourceName, isNamespaced, isSingleton}
 		gvh.resources[gvk] = newResourceHandler(gvh.g, gvkr)
 	}
 	return gvh
@@ -134,6 +140,7 @@ func (gvh *groupVersionHandlerImpl) info(c echo.Context) error {
 	for _, rh := range gvh.resources {
 		agi.Resources = append(agi.Resources, rh.Resource())
 	}
+	// TODO: Return metav1.APIResourceList
 	return c.JSONPretty(http.StatusOK, agi, "  ")
 }
 

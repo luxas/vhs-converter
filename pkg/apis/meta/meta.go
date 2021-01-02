@@ -61,7 +61,8 @@ func (id Metav1NameIdentifierFactory) Identify(o interface{}) (runtime.Identifya
 		if len(obj.GetNamespace()) == 0 || len(obj.GetName()) == 0 {
 			return nil, false
 		}
-		return runtime.NewIdentifier(fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())), true
+		// TODO: The GenericRawStorage doesn't support "/"-separated identifiers
+		return runtime.NewIdentifier(fmt.Sprintf("%s-%s", obj.GetNamespace(), obj.GetName())), true
 	}
 	return nil, false
 }

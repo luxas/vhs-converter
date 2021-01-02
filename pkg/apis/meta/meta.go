@@ -38,31 +38,43 @@ func IsNamespaced(obj interface{}) bool {
 	return ok && ns.IsNamespaced()
 }
 
-const SingletonIdentifier = "singleton"
+const SingletonIdentifierKey = "singleton"
 
 func SingletonKey(kind storage.KindKey) storage.ObjectKey {
-	return storage.NewObjectKey(kind, runtime.NewIdentifier(SingletonIdentifier))
+	return storage.NewObjectKey(kind, SingletonIdentifier())
 }
 
 type Metav1NameIdentifierFactory struct{}
 
 func (id Metav1NameIdentifierFactory) Identify(o interface{}) (runtime.Identifyable, bool) {
 	if IsSingleton(o) {
-		return runtime.NewIdentifier(SingletonIdentifier), true
+		return SingletonIdentifier(), true
 	}
 	switch obj := o.(type) {
 	case metav1.Object:
 		// If the object opted-out of namespacing explicitely, only use the name
 		if ns, ok := o.(Namespaced); ok && !ns.IsNamespaced() {
-			return runtime.NewIdentifier(obj.GetName()), true
+			return NameIdentifier(obj.GetName()), true
 		}
 		// Otherwise continue "as normal"
 		// TODO: Add in "default" here automatically?
 		if len(obj.GetNamespace()) == 0 || len(obj.GetName()) == 0 {
 			return nil, false
 		}
-		// TODO: The GenericRawStorage doesn't support "/"-separated identifiers
-		return runtime.NewIdentifier(fmt.Sprintf("%s-%s", obj.GetNamespace(), obj.GetName())), true
+		return NameNamespaceIdentifier(obj.GetNamespace(), obj.GetName()), true
 	}
 	return nil, false
+}
+
+func NameIdentifier(name string) runtime.Identifyable {
+	return runtime.NewIdentifier(name)
+}
+
+func NameNamespaceIdentifier(ns, name string) runtime.Identifyable {
+	// TODO: The GenericRawStorage doesn't support "/"-separated identifiers
+	return runtime.NewIdentifier(fmt.Sprintf("%s-%s", ns, name))
+}
+
+func SingletonIdentifier() runtime.Identifyable {
+	return runtime.NewIdentifier(SingletonIdentifierKey)
 }

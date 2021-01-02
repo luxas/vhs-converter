@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo"
 	"github.com/luxas/digitized/pkg/apis/digitized.luxaslabs.com/v1alpha1"
+	"github.com/luxas/digitized/pkg/apis/meta"
 	"github.com/weaveworks/libgitops/pkg/runtime"
 	"github.com/weaveworks/libgitops/pkg/serializer"
 	"github.com/weaveworks/libgitops/pkg/storage"
@@ -14,9 +15,7 @@ import (
 
 type StorageContext interface {
 	echo.Context
-	// Debugging & errors
-	Stringf(code int, format string, args ...interface{}) error
-	Errorf(code int, err error) error
+	// Warn headers
 	Warn(err error)
 	Warnf(format string, args ...interface{})
 	// Access to the Storage
@@ -32,24 +31,22 @@ type ResourceContext interface {
 	KindKey() storage.KindKey
 }
 
+type NamespacedResourceContext interface {
+	ResourceContext
+	Namespace() string
+}
+
 type NamedResourceContext interface {
 	ResourceContext
 	Name() string
-	Namespace() string
 	ObjectKey() storage.ObjectKey
 }
+
+var _ StorageContext = &storageContextImpl{}
 
 type storageContextImpl struct {
 	echo.Context
 	s storage.Storage
-}
-
-func (cc *storageContextImpl) Stringf(code int, format string, args ...interface{}) error {
-	return cc.Context.JSONPretty(code, &jsonMsgResp{fmt.Sprintf(format, args...)}, "  ")
-}
-
-type jsonMsgResp struct {
-	Message string `json:"message"`
 }
 
 func (cc *storageContextImpl) Warn(err error) {
@@ -58,10 +55,6 @@ func (cc *storageContextImpl) Warn(err error) {
 
 func (cc *storageContextImpl) Warnf(format string, args ...interface{}) {
 	cc.Response().Header().Add("Warning", fmt.Sprintf(format, args...))
-}
-
-func (cc *storageContextImpl) Errorf(code int, err error) error {
-	return cc.Stringf(code, err.Error())
 }
 
 func (cc *storageContextImpl) Storage() storage.Storage {
@@ -76,6 +69,8 @@ func storageContextMiddleware(s storage.Storage) func(next echo.HandlerFunc) ech
 		}
 	}
 }
+
+var _ ResourceContext = &resourceContextImpl{}
 
 type resourceContextImpl struct {
 	StorageContext
@@ -123,43 +118,64 @@ func resourceContextMiddleware(gvkr GroupVersionKindResource) func(next echo.Han
 	}
 }
 
+var _ NamespacedResourceContext = &namespacedResourceContextImpl{}
+
+type namespacedResourceContextImpl struct {
+	ResourceContext
+	namespace string
+}
+
+func (cc *namespacedResourceContextImpl) Namespace() string {
+	return cc.namespace
+}
+
+func namespacedResourceContextMiddleware() func(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			rc := c.(ResourceContext)
+			namespace := rc.Param("namespace")
+			if !rc.Resource().Namespaced {
+				return newStatusErrorf(http.StatusInternalServerError, "NamespacedResourceContext middleware requires a Namespaced resource")
+			}
+			if namespace == "" {
+				return newStatusErrorf(http.StatusBadRequest, "namespace parameter is mandatory")
+			}
+			cc := &namespacedResourceContextImpl{rc, namespace}
+			return next(cc)
+		}
+	}
+}
+
+var _ NamedResourceContext = &namedResourceContextImpl{}
+
 type namedResourceContextImpl struct {
 	ResourceContext
-	name      string
-	namespace string
+	name string
 }
 
 func (cc *namedResourceContextImpl) Name() string {
 	return cc.name
 }
 
-func (cc *namedResourceContextImpl) Namespace() string {
-	return cc.namespace
-}
-
 func (cc *namedResourceContextImpl) ObjectKey() storage.ObjectKey {
-	if cc.Resource().Namespaced {
+	if ns, ok := cc.ResourceContext.(NamespacedResourceContext); ok {
 		return storage.NewObjectKey(
 			cc.KindKey(),
-			runtime.NewIdentifier(fmt.Sprintf("%s/%s", cc.namespace, cc.name)),
+			meta.NameNamespaceIdentifier(ns.Namespace(), cc.name),
 		)
 	}
-	return storage.NewObjectKey(cc.KindKey(), runtime.NewIdentifier(cc.name))
+	return storage.NewObjectKey(cc.KindKey(), meta.NameIdentifier(cc.name))
 }
 
 func namedResourceContextMiddleware() func(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			rc := c.(ResourceContext)
-			namespace := rc.Param("namespace")
-			if rc.Resource().Namespaced && namespace == "" {
-				return rc.Stringf(http.StatusBadRequest, "namespace parameter is mandatory")
-			}
 			name := rc.Param("name")
 			if name == "" {
-				return rc.Stringf(http.StatusBadRequest, "name parameter is mandatory")
+				return newStatusErrorf(http.StatusBadRequest, "name parameter is mandatory")
 			}
-			cc := &namedResourceContextImpl{rc, name, namespace}
+			cc := &namedResourceContextImpl{rc, name}
 			return next(cc)
 		}
 	}

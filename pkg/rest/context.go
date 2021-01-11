@@ -5,12 +5,11 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo"
-	"github.com/luxas/digitized/pkg/apis/digitized.luxaslabs.com/v1alpha1"
 	"github.com/luxas/digitized/pkg/apis/meta"
-	"github.com/weaveworks/libgitops/pkg/runtime"
 	"github.com/weaveworks/libgitops/pkg/serializer"
 	"github.com/weaveworks/libgitops/pkg/storage"
-	kruntime "k8s.io/apimachinery/pkg/runtime"
+	kmeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 type StorageContext interface {
@@ -29,6 +28,11 @@ type ResourceContext interface {
 	// Conditionally defaults the answer when returning
 	JSONIndent(code int, obj runtime.Object) error
 	KindKey() storage.KindKey
+	// Applies TypeMeta info to the Object or List
+	NewObject() (storage.Object, error)
+	// TODO: Remove this in favor for typed Lists, or
+	// alternatively, implement a To/FromUnstructured defaulter in pkg/serializer
+	ApplyTypeMetaToList(obj storage.ObjectList)
 }
 
 type NamespacedResourceContext interface {
@@ -39,7 +43,10 @@ type NamespacedResourceContext interface {
 type NamedResourceContext interface {
 	ResourceContext
 	Name() string
-	ObjectKey() storage.ObjectKey
+	NamespacedName() storage.NamespacedName
+
+	NewNamedObject() (storage.Object, error)
+	ApplyName(obj storage.Object)
 }
 
 var _ StorageContext = &storageContextImpl{}
@@ -85,9 +92,14 @@ func (cc *resourceContextImpl) JSONIndent(code int, obj runtime.Object) error {
 	// Do automatic conditional defaulting of the returned response
 	// TODO: Do defaulting before validation?
 	if cc.ShouldDefault() {
-		objs := []kruntime.Object{obj}            // default case
-		if list, ok := obj.(*v1alpha1.List); ok { // list case
-			objs = list.Items
+		objs := []runtime.Object{obj} // default case
+		if kmeta.IsListType(obj) {    // list case
+			var err error
+			// TODO: This only works with typed Lists
+			objs, err = kmeta.ExtractList(obj)
+			if err != nil {
+				return err
+			}
 		}
 		if err := cc.Storage().Serializer().Defaulter().Default(objs...); err != nil {
 			return err
@@ -101,7 +113,19 @@ func (cc *resourceContextImpl) JSONIndent(code int, obj runtime.Object) error {
 }
 
 func (cc *resourceContextImpl) KindKey() storage.KindKey {
-	return storage.NewKindKey(cc.gvkr.GVK())
+	return cc.gvkr.GVK()
+}
+
+func (cc *resourceContextImpl) NewObject() (storage.Object, error) {
+	return storage.NewObjectForGVK(cc.gvkr.GVK(), cc.Storage().Serializer().Scheme())
+}
+
+func (cc *resourceContextImpl) ApplyTypeMetaToObject(obj storage.Object) {
+	obj.GetObjectKind().SetGroupVersionKind(cc.KindKey())
+}
+func (cc *resourceContextImpl) ApplyTypeMetaToList(obj storage.ObjectList) {
+	gvk := cc.KindKey()
+	obj.GetObjectKind().SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
 }
 
 func (cc *resourceContextImpl) ShouldDefault() bool {
@@ -157,23 +181,44 @@ func (cc *namedResourceContextImpl) Name() string {
 	return cc.name
 }
 
-func (cc *namedResourceContextImpl) ObjectKey() storage.ObjectKey {
-	if ns, ok := cc.ResourceContext.(NamespacedResourceContext); ok {
-		return storage.NewObjectKey(
-			cc.KindKey(),
-			meta.NameNamespaceIdentifier(ns.Namespace(), cc.name),
-		)
+func (cc *namedResourceContextImpl) NamespacedName() storage.NamespacedName {
+	n := storage.NamespacedName{
+		Name: cc.name,
 	}
-	return storage.NewObjectKey(cc.KindKey(), meta.NameIdentifier(cc.name))
+	if ns, ok := cc.ResourceContext.(NamespacedResourceContext); ok {
+		n.Namespace = ns.Namespace()
+	}
+	return n
+}
+
+func (cc *namedResourceContextImpl) NewNamedObject() (storage.Object, error) {
+	obj, err := cc.NewObject()
+	if err != nil {
+		return nil, err
+	}
+	cc.ApplyName(obj)
+	return obj, nil
+}
+
+func (cc *namedResourceContextImpl) ApplyName(obj storage.Object) {
+	nsName := cc.NamespacedName()
+	obj.SetName(nsName.Name)
+	obj.SetNamespace(nsName.Namespace)
 }
 
 func namedResourceContextMiddleware() func(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			rc := c.(ResourceContext)
-			name := rc.Param("name")
-			if name == "" {
-				return newStatusErrorf(http.StatusBadRequest, "name parameter is mandatory")
+			// Set name conditionally
+			name := ""
+			if rc.Resource().Singleton {
+				name = meta.SingletonSpecialName
+			} else {
+				name = rc.Param("name")
+				if name == "" {
+					return newStatusErrorf(http.StatusBadRequest, "name parameter is mandatory")
+				}
 			}
 			cc := &namedResourceContextImpl{rc, name}
 			return next(cc)

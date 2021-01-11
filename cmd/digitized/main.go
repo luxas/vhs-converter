@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -8,13 +9,13 @@ import (
 	"github.com/luxas/digitized/pkg/apis/digitized.luxaslabs.com/v1alpha1"
 	"github.com/luxas/digitized/pkg/apis/meta"
 	"github.com/luxas/digitized/pkg/rest"
-	"github.com/weaveworks/libgitops/pkg/runtime"
 	"github.com/weaveworks/libgitops/pkg/serializer"
 	"github.com/weaveworks/libgitops/pkg/storage"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 func init() {
@@ -63,13 +64,19 @@ func start(cfgFile string) error {
 
 	// Create a new simple storage
 	s := storage.NewGenericStorage(
-		storage.NewGenericRawStorage(cfg.RawStoragePath, v1alpha1.SchemeGroupVersion, serializer.ContentTypeYAML),
+		storage.NewGenericRawStorage(storage.GenericRawStorageOptions{
+			Directory:             cfg.RawStoragePath,
+			ContentType:           serializer.ContentTypeYAML,
+			DisableGroupDirectory: true,
+			Namespacer:            namespacer{},
+		}),
 		ser,
-		[]runtime.IdentifierFactory{meta.Metav1NameIdentifierFactory{}},
+		namespacer{},
 	)
 
 	// Create if it doesn't exist
-	if err := s.Create(&v1alpha1.Recorder{
+	ctx := context.Background()
+	if err := s.Create(ctx, &v1alpha1.Recorder{
 		Spec: v1alpha1.RecorderSpec{
 			Action: v1alpha1.RecorderActionNone,
 		},
@@ -86,4 +93,42 @@ func start(cfgFile string) error {
 	dr.RegisterCustomRoutes()
 
 	return dr.ListenBlocking()
+}
+
+var _ storage.Namespacer = &namespacer{}
+var _ storage.NamespaceEnforcer = &namespacer{}
+
+type namespacer struct{}
+
+func (namespacer) IsNamespaced(gk schema.GroupKind) (bool, error) {
+	gvs := scheme.PrioritizedVersionsForGroup(gk.Group)
+	if len(gvs) == 0 {
+		return false, errors.New("group has no version")
+	}
+	gvk := gk.WithVersion(gvs[0].Version)
+	obj, err := scheme.New(gvk)
+	if err != nil {
+		return false, err
+	}
+	return meta.IsNamespaced(obj), nil
+}
+
+// RequireNamespaceExists specifies whether the namespace must exist in the system.
+// Kubernetes requires this by default.
+func (namespacer) RequireNamespaceExists() bool { return false }
+
+func (namespacer) EnforceNamespace(obj storage.Object, namespaced bool, namespaces sets.String) error {
+	if namespaced {
+		// namespaced
+		if obj.GetNamespace() == "" {
+			return fmt.Errorf("a namespaced object must have namespace set")
+		}
+		return nil
+	}
+	// non-namespaced
+	if obj.GetNamespace() != "" {
+		// prune if exists
+		obj.SetNamespace("")
+	}
+	return nil
 }
